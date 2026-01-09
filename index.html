@@ -101,8 +101,13 @@ button {
   <div id="start" class="screen">
     <p>닉네임</p>
     <input id="nickname" /><br><br>
+
     <p>최대 인원</p>
     <input id="limit" type="number" min="1" max="500" value="2" /><br><br>
+
+    <p>비밀번호 (선택)</p>
+    <input id="roomPass" type="password" placeholder="미입력 시 공개방" /><br><br>
+
     <button onclick="startChat()">입장</button>
   </div>
 
@@ -119,12 +124,12 @@ button {
   </div>
 </div>
 
-<!-- Firebase SDK (compat) -->
+<!-- Firebase SDK -->
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
 
 <script>
-/* 🔥 Firebase 설정 (여기만 교체) */
+/* 🔥 Firebase 설정 (네 값으로 교체) */
 firebase.initializeApp({
   apiKey: "AIzaSyD3zF8IzJiHvbH4UrkEHEUe588um-VaUJs",
   authDomain: "j-chat-97bbe.firebaseapp.com",
@@ -134,7 +139,17 @@ firebase.initializeApp({
 
 const db = firebase.database();
 
-/* 방 ID 생성 */
+/* 간단 해시 함수 */
+function hash(str){
+  let h = 0;
+  for (let i = 0; i < str.length; i++) {
+    h = (h << 5) - h + str.charCodeAt(i);
+    h |= 0;
+  }
+  return h.toString();
+}
+
+/* 방 코드 생성 */
 function genRoom() {
   const c = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
   return Array.from({length:8}, () => c[Math.floor(Math.random()*c.length)]).join("");
@@ -159,16 +174,29 @@ function startChat() {
   if (!myNick) return alert("닉네임 입력");
 
   roomRef = db.ref("rooms/" + roomId);
+
   roomRef.once("value", snap => {
     if (!snap.exists()) {
+      const pass = roomPass.value.trim();
       roomRef.set({
         owner: myNick,
         limit: parseInt(limit.value),
-        archived: false
+        archived: false,
+        password: pass ? hash(pass) : null
       });
       owner = myNick;
     } else {
-      owner = snap.val().owner;
+      const data = snap.val();
+      owner = data.owner;
+
+      if (data.password) {
+        const input = prompt("이 방은 비밀번호가 필요합니다");
+        if (hash(input || "") !== data.password) {
+          alert("비밀번호가 틀렸습니다");
+          location.href = location.pathname;
+          return;
+        }
+      }
     }
     enterRoom();
   });
@@ -243,7 +271,7 @@ function send() {
   msg.value = "";
 }
 
-/* 아카이브 토글 */
+/* 아카이브 */
 function toggleArchive() {
   if (myNick !== owner) return;
   roomRef.child("archived").once("value", s => {
