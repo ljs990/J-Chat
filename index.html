@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>J-Chat 🔒</title>
+
+<style>
+body {
+  margin: 0;
+  background: #b2c7da;
+  font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", sans-serif;
+}
+.app {
+  max-width: 420px;
+  height: 100vh;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+}
+.header {
+  background: #a9bdce;
+  padding: 10px;
+  text-align: center;
+  font-weight: 700;
+}
+.sub {
+  font-size: 12px;
+  opacity: .8;
+}
+.chat {
+  flex: 1;
+  padding: 10px;
+  overflow-y: auto;
+}
+.row {
+  display: flex;
+  margin-bottom: 6px;
+}
+.me { justify-content: flex-end; }
+.other { justify-content: flex-start; }
+.bubble {
+  max-width: 70%;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: #fff;
+}
+.me .bubble {
+  background: #ffe812;
+  border-top-right-radius: 4px;
+}
+.other .bubble {
+  border-top-left-radius: 4px;
+}
+.meta {
+  font-size: 11px;
+  color: #555;
+  text-align: right;
+}
+.input {
+  display: flex;
+  padding: 8px;
+  background: #eee;
+}
+input {
+  flex: 1;
+  padding: 8px;
+}
+button {
+  margin-left: 6px;
+}
+.screen {
+  padding: 30px;
+  text-align: center;
+}
+.users {
+  background: #dbe6ef;
+  font-size: 12px;
+  padding: 6px;
+}
+.user {
+  display: flex;
+  justify-content: space-between;
+}
+.kick {
+  color: red;
+  cursor: pointer;
+}
+</style>
+</head>
+
+<body>
+<div class="app">
+  <div class="header">
+    J-Chat 🔒
+    <div class="sub" id="roomInfo"></div>
+    <div class="sub" id="countInfo"></div>
+  </div>
+
+  <!-- 시작 화면 -->
+  <div id="start" class="screen">
+    <p>닉네임</p>
+    <input id="nickname" /><br><br>
+    <p>최대 인원</p>
+    <input id="limit" type="number" min="1" max="500" value="2" /><br><br>
+    <button onclick="startChat()">입장</button>
+  </div>
+
+  <!-- 채팅 화면 -->
+  <div id="chatArea" style="display:none; flex:1; flex-direction:column;">
+    <div class="users" id="userList"></div>
+    <div class="chat" id="chat"></div>
+    <div class="input">
+      <input id="msg" placeholder="메시지 입력" />
+      <button onclick="send()">전송</button>
+      <button onclick="toggleArchive()">아카이브</button>
+      <button onclick="hideRoom()">방 삭제</button>
+    </div>
+  </div>
+</div>
+
+<!-- Firebase SDK (compat) -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+
+<script>
+/* 🔥 Firebase 설정 (여기만 교체) */
+firebase.initializeApp({
+  apiKey: "AIzaSyD3zF8IzJiHvbH4UrkEHEUe588um-VaUJs",
+  authDomain: "j-chat-97bbe.firebaseapp.com",
+  databaseURL: "https://j-chat-97bbe-default-rtdb.firebaseio.com",
+  projectId: "j-chat-97bbe"
+});
+
+const db = firebase.database();
+
+/* 방 ID 생성 */
+function genRoom() {
+  const c = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  return Array.from({length:8}, () => c[Math.floor(Math.random()*c.length)]).join("");
+}
+
+let roomId = location.hash.substring(1) || genRoom();
+location.hash = roomId;
+roomInfo.textContent = "방 코드: " + roomId;
+
+/* 숨김 방 체크 */
+const hidden = JSON.parse(localStorage.getItem("hiddenRooms") || "{}");
+if (hidden[roomId]) {
+  alert("삭제된 방입니다.");
+  throw new Error("Hidden room");
+}
+
+let myNick, roomRef, chatRef, owner;
+
+/* 시작 */
+function startChat() {
+  myNick = nickname.value.trim();
+  if (!myNick) return alert("닉네임 입력");
+
+  roomRef = db.ref("rooms/" + roomId);
+  roomRef.once("value", snap => {
+    if (!snap.exists()) {
+      roomRef.set({
+        owner: myNick,
+        limit: parseInt(limit.value),
+        archived: false
+      });
+      owner = myNick;
+    } else {
+      owner = snap.val().owner;
+    }
+    enterRoom();
+  });
+}
+
+/* 입장 */
+function enterRoom() {
+  start.style.display = "none";
+  chatArea.style.display = "flex";
+
+  const userRef = roomRef.child("users/" + myNick);
+  userRef.set(true);
+  userRef.onDisconnect().remove();
+
+  roomRef.child("users").on("value", snap => {
+    const users = snap.val() || {};
+    const count = Object.keys(users).length;
+    roomRef.child("limit").once("value", l => {
+      countInfo.textContent = `인원 ${count} / ${l.val()}`;
+    });
+    drawUsers(users);
+  });
+
+  roomRef.child("archived").on("value", s => {
+    msg.disabled = s.val();
+    msg.placeholder = s.val() ? "읽기 전용" : "메시지 입력";
+  });
+
+  chatRef = roomRef.child("chat");
+  chatRef.on("child_added", s => {
+    const d = s.val();
+    const row = document.createElement("div");
+    row.className = "row " + (d.nick === myNick ? "me" : "other");
+    row.innerHTML = `
+      <div>
+        <div class="bubble">${d.text}</div>
+        <div class="meta">${d.time}</div>
+      </div>`;
+    chat.appendChild(row);
+    chat.scrollTop = chat.scrollHeight;
+  });
+}
+
+/* 유저 목록 */
+function drawUsers(users) {
+  userList.innerHTML = "";
+  Object.keys(users).forEach(u => {
+    const div = document.createElement("div");
+    div.className = "user";
+    div.innerHTML = `<span>${u}${u===owner?" 👑":""}</span>`;
+    if (myNick === owner && u !== owner) {
+      const k = document.createElement("span");
+      k.className = "kick";
+      k.textContent = "강퇴";
+      k.onclick = () => roomRef.child("users/" + u).remove();
+      div.appendChild(k);
+    }
+    userList.appendChild(div);
+  });
+}
+
+/* 메시지 전송 */
+function send() {
+  if (!msg.value) return;
+  const d = new Date();
+  chatRef.push({
+    nick: myNick,
+    text: msg.value,
+    time: d.getHours().toString().padStart(2,"0") + ":" +
+          d.getMinutes().toString().padStart(2,"0")
+  });
+  msg.value = "";
+}
+
+/* 아카이브 토글 */
+function toggleArchive() {
+  if (myNick !== owner) return;
+  roomRef.child("archived").once("value", s => {
+    roomRef.child("archived").set(!s.val());
+  });
+}
+
+/* 방 숨김 */
+function hideRoom() {
+  if (!confirm("이 방을 숨기시겠습니까?")) return;
+  const h = JSON.parse(localStorage.getItem("hiddenRooms") || "{}");
+  h[roomId] = true;
+  localStorage.setItem("hiddenRooms", JSON.stringify(h));
+  location.href = location.pathname;
+}
+</script>
+</body>
+</html>
